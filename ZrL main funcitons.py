@@ -1,6 +1,15 @@
 #all started in 7 17 2026 by @wushiyangyangjun & @YaatoX & deepseek &ChatGPT
 #文件框架############################################################################################
 from pathlib import Path                      #引入路径库
+import csv                                    #存东西用
+import pickle                                 #同上
+import time                                   
+import requests                               #for 多线程下载
+import json              #引入了json
+import urllib.request    #方便获取版本ls
+
+
+CONFIG_PATH = Path("config.csv")              #创建conf文件
 print ("启动器所在目录：",Path.cwd())
 项目文件夹 = Path.cwd() /".minecraft"          #定义、创建根目录
 项目文件夹.mkdir(exist_ok=True)                
@@ -18,8 +27,15 @@ for 文件夹 in 子文件夹们:
     文件夹.mkdir(parents=True, exist_ok=True)
     print(f"✓成功！ {文件夹}")
 ##下载版本！！#######################################################################################
-import json              #引入了json
-import urllib.request    #方便获取版本ls
+
+def mutithread(url):
+    '''多线程下载'''
+    response = requests.get(url, steam=True)
+    ...
+
+
+
+
 verls = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"     #######源
 print("正在从 Mojang 服务器获取版本列表...")
 try:
@@ -225,132 +241,139 @@ import string
 def 随机Token(长度=32):
     """生成随机十六进制 token"""
     return ''.join(random.choices(string.hexdigits.lower(), k=长度))
-#
+#CLIENT_ID = "2c6bfa41-3087-484f-8902-04d9aeeffed2"
+
 def 正版登录():
     """
-    设备代码流登录（需要自己的 Azure 客户端 ID）。
-    返回 (玩家名, uuid, access_token) 或 None。
+    授权代码流登录（随机端口本地服务器接收回调）
+    返回 (玩家名, uuid, access_token) 或 None
     """
-    import webbrowser, time, requests
+    import http.server, threading, urllib.parse, webbrowser, time, requests, socket
 
-    # ===== 改成你在 Azure 注册的客户端 ID =====
+    # ===== 改成你自己的 Azure 客户端 ID =====
     CLIENT_ID = "2c6bfa41-3087-484f-8902-04d9aeeffed2"
-    # =========================================
+    # =======================================
 
     SCOPE = "XboxLive.signin offline_access"
-    DEVICE_CODE_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode"
-    TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
-    XBL_AUTH_URL = "https://user.auth.xboxlive.com/user/authenticate"
-    XSTS_AUTH_URL = "https://xsts.auth.xboxlive.com/xsts/authorize"
-    MC_AUTH_URL = "https://api.minecraftservices.com/authentication/login_with_xbox"
-    MC_PROFILE_URL = "https://api.minecraftservices.com/minecraft/profile"
+    AUTHORIZE_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize"
+    TOKEN_URL   = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
+    XBL_URL     = "https://user.auth.xboxlive.com/user/authenticate"
+    XSTS_URL    = "https://xsts.auth.xboxlive.com/xsts/authorize"
+    MC_TOKEN    = "https://api.minecraftservices.com/authentication/login_with_xbox"
+    MC_PROFILE  = "https://api.minecraftservices.com/minecraft/profile"
 
-    # 1. 获取设备代码
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    data = {"client_id": CLIENT_ID, "scope": SCOPE}
-    try:
-        r = requests.post(DEVICE_CODE_URL, data=data, headers=headers)
-        if r.status_code != 200:
-            print(f"获取设备代码失败 [{r.status_code}]: {r.text}")
-            return None
-        resp = r.json()
-        device_code = resp["device_code"]
-        user_code = resp["user_code"]
-        verification_uri = resp["verification_uri"]
-        interval = resp.get("interval", 5)
-        expires_in = resp.get("expires_in", 900)
-    except Exception as e:
-        print(f"请求异常：{e}")
-        return None
+    # ---- 1. 随机端口 + 本地服务器 ----
+    def 取空闲端口():
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("", 0))
+            return s.getsockname()[1]
 
-    print(f"\n请打开 {verification_uri}")
-    print(f"输入代码：{user_code}")
-    webbrowser.open(verification_uri)
+    端口 = 取空闲端口()
+    REDIRECT_URI = f"http://localhost:{端口}"
+    code_box = [None]
 
-    # 2. 轮询令牌
-    ms_token = None
-    start = time.time()
-    while time.time() - start < expires_in:
-        time.sleep(interval)
-        try:
-            r = requests.post(TOKEN_URL, data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": device_code,
-                "client_id": CLIENT_ID,
-            }, headers=headers)
-            if r.status_code == 200:
-                ms_token = r.json()["access_token"]
-                break
-            error = r.json().get("error", "")
-            if error == "authorization_pending":
-                continue
-            elif error == "slow_down":
-                interval += 1
-                continue
+    class 处理器(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            q = urllib.parse.urlparse(self.path).query
+            p = urllib.parse.parse_qs(q)
+            if "code" in p:
+                code_box[0] = p["code"][0]
+                self.send_response(200)
+                self.send_header("Content-type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"OK! You can close this window.")
             else:
-                print(f"Token 错误 [{r.status_code}]: {r.text}")
-                return None
-        except Exception as e:
-            print(f"轮询异常：{e}")
-            return None
+                self.send_response(400); self.end_headers()
+        def log_message(self, *args): pass
 
-    if not ms_token:
-        print("登录超时。")
-        return None
-
-    # 3. Xbox Live 认证
     try:
-        r = requests.post(XBL_AUTH_URL, json={
-            "Properties": {"AuthMethod": "RPS", "SiteName": "user.auth.xboxlive.com", "RpsTicket": f"d={ms_token}"},
+        srv = http.server.HTTPServer(("localhost", 端口), 处理器)
+    except Exception as e:
+        print(f"本地服务器启动失败：{e}"); return None
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    # ---- 2. 打开浏览器 ----
+    params = {"client_id": CLIENT_ID, "response_type": "code",
+              "redirect_uri": REDIRECT_URI, "scope": SCOPE, "response_mode": "query"}
+    url = AUTHORIZE_URL + "?" + urllib.parse.urlencode(params)
+    print(f"打开浏览器登录微软账号..."); webbrowser.open(url)
+
+    # ---- 3. 等待回调 ----
+    for _ in range(600):        # 最多等 5 分钟
+        if code_box[0]: break
+        time.sleep(0.5)
+    srv.shutdown(); srv.server_close()
+    if not code_box[0]: print("超时未登录"); return None
+    code = code_box[0]; print("已获得授权码")
+
+    # ---- 4. code -> Microsoft token ----
+    try:
+        r = requests.post(TOKEN_URL, data={
+            "client_id": CLIENT_ID, "code": code,
+            "redirect_uri": REDIRECT_URI, "grant_type": "authorization_code"
+        }, headers={"Content-Type": "application/x-www-form-urlencoded"})
+        r.raise_for_status(); ms_token = r.json()["access_token"]
+    except Exception as e: print(f"换取 Microsoft token 失败：{e}"); return None
+
+    # ---- 5. Xbox Live ----
+    try:
+        r = requests.post(XBL_URL, json={
+            "Properties": {"AuthMethod": "RPS", "SiteName": "user.auth.xboxlive.com",
+                           "RpsTicket": f"d={ms_token}"},
             "RelyingParty": "http://auth.xboxlive.com", "TokenType": "JWT"
-        })
-        r.raise_for_status()
-        xbl_token = r.json()["Token"]
-    except Exception as e:
-        print(f"Xbox Live 认证失败：{e}")
-        return None
+        }); r.raise_for_status(); xbl = r.json()["Token"]
+    except Exception as e: print(f"XBL 失败：{e}"); return None
 
-    # 4. XSTS
+    # ---- 6. XSTS ----
     try:
-        r = requests.post(XSTS_AUTH_URL, json={
-            "Properties": {"SandboxId": "RETAIL", "UserTokens": [xbl_token]},
+        r = requests.post(XSTS_URL, json={
+            "Properties": {"SandboxId": "RETAIL", "UserTokens": [xbl]},
             "RelyingParty": "rp://api.minecraftservices.com/", "TokenType": "JWT"
-        })
-        r.raise_for_status()
-        xsts_token = r.json()["Token"]
-        user_hash = r.json()["DisplayClaims"]["xui"][0]["uhs"]
-    except Exception as e:
-        print(f"XSTS 失败：{e}")
-        return None
+        }); r.raise_for_status()
+        xsts = r.json()["Token"]; uhs = r.json()["DisplayClaims"]["xui"][0]["uhs"]
+    except Exception as e: print(f"XSTS 失败：{e}"); return None
 
-    # 5. Minecraft token
+    # ---- 7. Minecraft token ----
     try:
-        r = requests.post(MC_AUTH_URL, json={"identityToken": f"XBL3.0 x={user_hash};{xsts_token}"})
-        r.raise_for_status()
-        mc_token = r.json()["access_token"]
-    except Exception as e:
-        print(f"Minecraft token 失败：{e}")
-        return None
+        r = requests.post(MC_TOKEN, json={"identityToken": f"XBL3.0 x={uhs};{xsts}"})
+        r.raise_for_status(); mc_tok = r.json()["access_token"]
+    except Exception as e: print(f"Minecraft token 失败：{e}"); return None
 
-    # 6. 玩家信息
+    # ---- 8. 玩家信息 ----
     try:
-        r = requests.get(MC_PROFILE_URL, headers={"Authorization": f"Bearer {mc_token}"})
-        r.raise_for_status()
-        p = r.json()
-        name = p["name"]
-        uid = p["id"]
-        uuid = uid[:8] + "-" + uid[8:12] + "-" + uid[12:16] + "-" + uid[16:20] + "-" + uid[20:]
+        r = requests.get(MC_PROFILE, headers={"Authorization": f"Bearer {mc_tok}"})
+        r.raise_for_status(); p = r.json()
+        name = p["name"]; uid = p["id"]
+        uuid = uid[:8]+"-"+uid[8:12]+"-"+uid[12:16]+"-"+uid[16:20]+"-"+uid[20:]
         print(f"✅ 正版登录成功：{name} ({uuid})")
-        return (name, uuid, mc_token)
-    except Exception as e:
-        print(f"获取信息失败：{e}")
-        return None
+        return name, uuid, mc_tok
+    except Exception as e: print(f"获取信息失败：{e}"); return None
+
 ##配置启动#
+def readconfig() :                                                     #读 an offline player need: pname , token ,uuid   ！！in aiidtion RAM！！
+    if not CONFIG_PATH.exists():
+        return None 
+    config = open("config.csv",encoding='UTF-8')
+    reader = csv.reader(config)
+    rows = list(reader)
+
+    if len(rows) < 1:
+        return None
+    数据行 = rows[0]
+    if len(数据行) < 2:
+        return None
+
+    
+    
+    return (数据行[0], 数据行[1])
+#旧名字, 旧内存 = readconfig()  # 直接解包返回值
+
+...
 登录方式 = input("请选择登录方式（1=离线登录，2=正版登录）：")
 
 if 登录方式 == "2":
     print("正在启动微软登录...")
-    结果 = 正版登录()   # 你之前写的那个函数
+    结果 = 正版登录()   
     if 结果:
         pmane, uuid, token = 结果
         user_type = "mojang"
@@ -360,17 +383,71 @@ if 登录方式 == "2":
         uuid = 离线UUID(pmane)
         token = 随机Token(32)
         user_type = "legacy"
+    配置 = readconfig()
+    if 配置:
+        # 有配置，用配置里的内存
+        _, ram = 配置  # 只取内存
+        print(f"使用配置的内存：{ram}")
+    else:
+        # 没有配置，让用户输入
+        ram = input("最大内存（如 2G）：")
+        if not (ram.endswith("G") or ram.endswith("M")):
+            ram += "G"
+        # 保存默认配置（只存内存）
+        write_config("default", ram)
 else:
-    pmane = input("请输入离线用户名：")
-    uuid = 离线UUID(pmane)
-    token = 随机Token(32)
     user_type = "legacy"
+    if readconfig() == None:
+        pmane = input("请输入离线用户名：")
+        uuid = 离线UUID(pmane)
+        token = 随机Token(32)
+        #user_type = "legacy"
+    # 2. 分配内存
+        ram = input("最大内存（如 2G）：")
+        if not (ram.endswith("G") or ram.endswith("M")):
+               ram += "G"
+        write_config(pmane, ram)
+    else:
 
-# 2. 分配内存
-ram = input("最大内存（如 2G）：")
-if not (ram.endswith("G") or ram.endswith("M")):
-    ram += "G"
+        旧名字, 旧内存 = readconfig()  # 直接解包返回值
+        print ("上次配置：", 旧名字, 旧内存)
+        应用配置 = input("您有上次配置，是否应用?是请按0，不是按1")
+        if 应用配置 == "0":
+           pmane = 旧名字
+           ram = 旧内存
+           uuid = 离线UUID(pmane)
+           token = 随机Token(32)
+        else:
+            pmane = input("请输入离线用户名：")
+            uuid = 离线UUID(pmane)
+            token = 随机Token(32)
+         #   user_type = "legacy"
+    # 2. 分配内存
+            ram = input("最大内存（如 2G）：")
+            if not (ram.endswith("G") or ram.endswith("M")):
+              ram += "G"
+            write_config(pmane, ram)
 tgver = 目标版本
+
+#存储配置
+#config   an offline player need: pname , token ,uuid   ！！in aiidtion RAM！！
+
+def write_config():                                                      #存用户配置
+    file = open ('config.csv', 'w', encoding="UTF-8")
+    
+    writer = csv.writer(file)
+    
+    #head = ['name', 'token', 'uuid'] 
+    line_1 = [pmane, ram]
+
+    #writer.writerow(head)
+    writer.writerow(line_1)
+    file.close()
+... #if 
+
+#write_config ()                             #存
+
+
 #
 JSON路径 = minecraft目录 / "versions" / 目标版本 / f"{目标版本}.json"
 with open(JSON路径, "r") as f:
