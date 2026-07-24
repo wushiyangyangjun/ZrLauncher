@@ -1,13 +1,17 @@
-#all started in 7 17 2026 by @wushiyangyangjun & @YaatoX & deepseek &ChatGPT
-#文件框架############################################################################################
+#all started in 7 17 2026 by @wushiyangyangjun & @YaatoX & deepseek & ChatGPT & kimi
+#######################################################################################################
 from pathlib import Path                      #引入路径库
 import csv                                    #存东西用
 import pickle                                 #同上
 import time                                   
-import requests                               #for 多线程下载
+import requests                               
+from concurrent.futures import ThreadPoolExecutor  #for 多线程下载
+import os
+from threading import Lock
 import json              #引入了json
 import urllib.request    #方便获取版本ls
-
+import http.server, threading, urllib.parse, webbrowser, time, requests, socket               #咋他妈这么多？！！
+#文件框架############################################################################################
 
 CONFIG_PATH = Path("config.csv")              #创建conf文件
 print ("启动器所在目录：",Path.cwd())
@@ -27,14 +31,96 @@ for 文件夹 in 子文件夹们:
     文件夹.mkdir(parents=True, exist_ok=True)
     print(f"✓成功！ {文件夹}")
 ##下载版本！！#######################################################################################
-
-def mutithread(url):
+buffer_size = 65536 #64Kbytes
+#nthreads = 8
+def multithread(url, fname, nthreads):
     '''多线程下载'''
-    response = requests.get(url, steam=True)
+    fname = Path(fname)
+    try:
+        head_resp = requests.head(url, allow_redirects=True, timeout=10)
+        head_resp.raise_for_status()
+    except Exception as e:
+        print(f"  ⚠️ HEAD 请求失败，回退单线程: {e}")
+        return single_download(url, fname)
+    accept_ranges = head_resp.headers.get('Accept-Ranges', '')
+    total_size = int(head_resp.headers.get('Content-Length', 0))
+    if total_size == 0 or accept_ranges != 'bytes':
+        print(f"  ⚠️ 服务器不支持多线程下载，回退单线程")
+        return single_download(url, fname)
+    fname.parent.mkdir(parents=True, exist_ok=True)
+    with open(fname, 'wb') as f:
+        f.truncate(total_size)
+    part_size = total_size // nthreads
+    ranges = []
+    for i in range(nthreads):
+        start = i * part_size
+        end = total_size - 1 if i == nthreads - 1 else (i + 1) * part_size - 1
+        ranges.append((start, end, i))
+    progress_lock = Lock()
+    downloaded = [0]  # 用列表实现闭包修改
+    
+    def download_chunk(start: int, end: int, part_num: int):
+        """下载指定字节范围 [start, end]，直接写入文件对应位置"""
+        headers = {'Range': f'bytes={start}-{end}'}
+        
+        try:
+            with requests.get(url, headers=headers, stream=True, timeout=30) as resp:
+                resp.raise_for_status()
+                
+                # 直接 seek 到对应位置写入，各线程写不同位置，无冲突
+                with open(fname, 'r+b') as f:
+                    f.seek(start)
+                    for chunk in resp.iter_content(chunk_size=buffer_size):
+                        if chunk:
+                            f.write(chunk)
+                            with progress_lock:
+                                downloaded[0] += len(chunk)
+            
+            return part_num, True, None
+            
+        except Exception as e:
+            return part_num, False, str(e)
+    
+    # 5. 并发下载
+    print(f"  多线程下载: {total_size/1024/1024:.1f} MB, {nthreads} 线程")
+    
+    with ThreadPoolExecutor(max_workers=nthreads) as pool:
+        futures = {
+            pool.submit(download_chunk, start, end, i): i 
+            for start, end, i in ranges
+        }
+        
+        for future in as_completed(futures):
+            part_num, success, error = future.result()
+            if not success:
+                print(f"  ❌ 块 {part_num} 下载失败: {error}")
+                # 可以在这里加入重试逻辑
+                raise Exception(f"下载失败: {error}")
+    
+    print(f"  ✅ 完成: {fname.name}")
+    return True
+          
+        
     ...
-
-
-
+    
+def single_download(url: str, fname: Path):
+    """单线程下载（兜底方案）"""
+    fname = Path(fname)
+    fname.parent.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        with requests.get(url, stream=True, timeout=30) as resp:
+            resp.raise_for_status()
+            with open(fname, 'wb') as f:
+                for chunk in resp.iter_content(chunk_size=buffer_size):
+                    if chunk:
+                        f.write(chunk)
+        print(f"  ✅ 单线程完成: {fname.name}")
+        return True
+    except Exception as e:
+        print(f"  ❌ 下载失败: {e}")
+        return False
+         
 
 verls = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"     #######源
 print("正在从 Mojang 服务器获取版本列表...")
@@ -104,7 +190,8 @@ print(f"  - 资源版本：{版本信息['assetIndex']['id']}")
 if not 客户端路径.exists():
     大小MB = 版本信息["downloads"]["client"]["size"] / 1024 / 1024
     print(f"\n正在下载客户端 jar（{大小MB:.1f} MB）...")
-    urllib.request.urlretrieve(客户端URL, 客户端路径)
+    #urllib.request.urlretrieve(客户端URL, 客户端路径)
+    multithread(客户端URL, 客户端路径, nthreads=4)
     print("✓ 客户端 jar 下载完成")
 else:
     print("✓ 客户端 jar 已存在，跳过下载")
@@ -136,7 +223,12 @@ for 序号, 库 in enumerate(依赖库列表, start=1):
     # 创建父文件夹并下载
     本地完整路径.parent.mkdir(parents=True, exist_ok=True)
     try:
-        urllib.request.urlretrieve(下载地址, 本地完整路径)
+        文件大小 = 下载信息.get("size", 0)
+        if 文件大小 > 5 * 1024 * 1024:  # 大于 5MB 用多线程
+            multithread(下载地址, 本地完整路径, nthreads=8)
+        else:
+             single_download(下载地址, 本地完整路径)
+    
         成功 += 1
     except Exception as e:
         失败列表.append(库["name"])
@@ -165,8 +257,15 @@ if not 索引路径.exists():
 else:
     print("\n✓ 资源索引已存在，跳过下载")
 #Downlod真资源
+import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
+from pathlib import Path
+import time
+
+
 def 下载资源文件(资源索引ID, minecraft目录):
-    """根据资源索引下载所有缺失的资源对象"""
+    """根据资源索引下载所有缺失的资源对象（批量并发版）"""
     索引路径 = minecraft目录 / "assets" / "indexes" / f"{资源索引ID}.json"
     if not 索引路径.exists():
         print("❌ 资源索引不存在，请先下载")
@@ -181,9 +280,9 @@ def 下载资源文件(资源索引ID, minecraft目录):
 
     基础URL = "https://resources.download.minecraft.net/"
 
-    成功 = 0
+    # ========== 先过滤出需要下载的 ==========
+    待下载列表 = []      # [(下载URL, 保存路径, 哈希), ...]
     跳过 = 0
-    失败列表 = []
 
     for 文件名, 信息 in 所有对象.items():
         哈希 = 信息["hash"]
@@ -196,23 +295,63 @@ def 下载资源文件(资源索引ID, minecraft目录):
 
         保存路径.parent.mkdir(parents=True, exist_ok=True)
         下载URL = 基础URL + 子目录 + "/" + 哈希
+        待下载列表.append((下载URL, 保存路径, 哈希))
 
+    成功 = 0
+    失败列表 = []
+    进度锁 = Lock()
+    已完成计数 = [跳过]   # 已存在 + 新下载 = 总进度
+
+    # ========== 下载单个文件的函数 ==========
+    def 下载单个(下载URL, 保存路径, 哈希):
         try:
-            urllib.request.urlretrieve(下载URL, 保存路径)
-            成功 += 1
-        except Exception as e:
-            失败列表.append(哈希)
+            with requests.get(下载URL, stream=True, timeout=15) as resp:
+                resp.raise_for_status()
+                with open(保存路径, 'wb') as f:
+                    for chunk in resp.iter_content(chunk_size=32*1024):
+                        if chunk:
+                            f.write(chunk)
+            return True, 哈希
+        except Exception:
+            return False, 哈希
 
-        # 每 100 个文件输出一次进度
-        已完成 = 成功 + 跳过
-        if 已完成 % 100 == 0:
-            print(f"  资源下载进度：{已完成}/{总数}")
+    # ========== 批量并发下载 ==========
+    if not 待下载列表:
+        print(f"资源下载完成！成功：0，跳过（已存在）：{跳过}，失败：0")
+        return
 
+    print(f"  需要下载: {len(待下载列表)} 个，并发下载中...")
+
+    start_time = time.time()
+
+    with ThreadPoolExecutor(max_workers=64) as pool:
+        futures = {
+            pool.submit(下载单个, url, path, h): (url, path, h) 
+            for url, path, h in 待下载列表
+        }
+
+        for future in as_completed(futures):
+            ok, 哈希 = future.result()
+            
+            with 进度锁:
+                if ok:
+                    成功 += 1
+                else:
+                    失败列表.append(哈希)
+                
+                已完成计数[0] += 1
+                
+                # 每 100 个输出一次进度（保持你原来的习惯）
+                if 已完成计数[0] % 100 == 0:
+                    print(f"  资源下载进度：{已完成计数[0]}/{总数}")
+
+    # ========== 输出结果（保持你原来的格式）==========
     print(f"资源下载完成！成功：{成功}，跳过（已存在）：{跳过}，失败：{len(失败列表)}")
     if 失败列表:
         print("以下文件下载失败（可重试）：")
         for h in 失败列表[:5]:
             print(f"  - {h}")
+
 
 print("\n" + "=" * 50)
 print(f"！！！ 版本 {目标版本} 全部下载完成！")
@@ -221,6 +360,100 @@ print(f"现在可以启动 {目标版本} 了！")
 import subprocess
 import platform
 import hashlib
+
+import csv
+import time
+import requests
+from pathlib import Path
+
+
+ONLINE_USER_PATH = Path("onlineusr.csv")
+TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
+CLIENT_ID = "2c6bfa41-3087-484f-8902-04d9aeeffed2"
+
+
+def 保存正版用户(pmane, uuid, access_token, refresh_token):
+    """存 name, uuid, access_token, refresh_token, 过期时间"""
+    with open(ONLINE_USER_PATH, 'w', encoding="UTF-8", newline='') as f:
+        writer = csv.writer(f)
+        # 存5列：名字, uuid, access_token, refresh_token, 获取时间戳
+        writer.writerow([pmane, uuid, access_token, refresh_token, int(time.time())])
+
+
+def 读取正版用户():
+    """
+    读取缓存的正版信息
+    返回: (pmane, uuid, access_token, refresh_token, 获取时间) 或 None
+    """
+    if not ONLINE_USER_PATH.exists():
+        return None
+    
+    try:
+        with open(ONLINE_USER_PATH, 'r', encoding="UTF-8") as f:
+            reader = csv.reader(f)
+            row = next(reader)
+            if len(row) < 5:
+                return None  # 旧格式，没有 refresh_token
+            pmane, uuid, access_token, refresh_token, 获取时间 = row
+            return pmane, uuid, access_token, refresh_token, int(获取时间)
+    except Exception:
+        return None
+
+
+def 刷新令牌(refresh_token):
+    """用 refresh_token 换新的 access_token"""
+    try:
+        r = requests.post(TOKEN_URL, data={
+            "client_id": CLIENT_ID,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+            "scope": "XboxLive.signin offline_access"
+        }, headers={"Content-Type": "application/x-www-form-urlencoded"})
+        r.raise_for_status()
+        data = r.json()
+        return data["access_token"], data.get("refresh_token", refresh_token)
+    except Exception as e:
+        print(f"刷新令牌失败: {e}")
+        return None, None
+
+
+def 正版登录流程():
+    """
+    完整的正版登录：先尝试读缓存，过期就刷新，刷新失败再走浏览器
+    返回: (pmane, uuid, access_token) 或 None
+    """
+    # 1. 先尝试读缓存
+    缓存 = 读取正版用户()
+    if 缓存:
+        pmane, uuid, old_token, refresh_token, 获取时间 = 缓存
+        已过去 = time.time() - 获取时间
+        
+        # access_token 有效期约 1 小时，留点余量按 50 分钟算
+        if 已过去 < 3000:  # 50 分钟内
+            print(f"✓ 使用缓存的正版登录：{pmane}")
+            return pmane, uuid, old_token
+        
+        # 过期了，尝试刷新
+        print("令牌已过期，尝试刷新...")
+        new_token, new_refresh = 刷新令牌(refresh_token)
+        if new_token:
+            保存正版用户(pmane, uuid, new_token, new_refresh or refresh_token)
+            print(f"✓ 令牌刷新成功：{pmane}")
+            return pmane, uuid, new_token
+        else:
+            print("刷新失败，重新登录...")
+    
+    # 2. 缓存没有或刷新失败，走完整浏览器登录
+    print("正在启动微软登录...")
+    结果 = 正版登录()
+    
+    if 结果:
+        pmane, uuid, access_token, refresh_token = 结果  # ← 4个值
+        保存正版用户(pmane, uuid, access_token, refresh_token)
+        print(f"✓ 正版登录已缓存：{pmane}")
+        return pmane, uuid, access_token
+    
+
 #离线部分
 def 离线UUID(玩家名):
     """根据玩家名生成稳定的离线 UUID（和官方启动器一致）"""
@@ -246,14 +479,11 @@ def 随机Token(长度=32):
 def 正版登录():
     """
     授权代码流登录（随机端口本地服务器接收回调）
-    返回 (玩家名, uuid, access_token) 或 None
+    返回 (玩家名, uuid, access_token, refresh_token) 或 None
     """
     import http.server, threading, urllib.parse, webbrowser, time, requests, socket
 
-    # ===== 改成你自己的 Azure 客户端 ID =====
     CLIENT_ID = "2c6bfa41-3087-484f-8902-04d9aeeffed2"
-    # =======================================
-
     SCOPE = "XboxLive.signin offline_access"
     AUTHORIZE_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize"
     TOKEN_URL   = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
@@ -262,7 +492,6 @@ def 正版登录():
     MC_TOKEN    = "https://api.minecraftservices.com/authentication/login_with_xbox"
     MC_PROFILE  = "https://api.minecraftservices.com/minecraft/profile"
 
-    # ---- 1. 随机端口 + 本地服务器 ----
     def 取空闲端口():
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("", 0))
@@ -292,14 +521,12 @@ def 正版登录():
         print(f"本地服务器启动失败：{e}"); return None
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
-    # ---- 2. 打开浏览器 ----
     params = {"client_id": CLIENT_ID, "response_type": "code",
               "redirect_uri": REDIRECT_URI, "scope": SCOPE, "response_mode": "query"}
     url = AUTHORIZE_URL + "?" + urllib.parse.urlencode(params)
     print(f"打开浏览器登录微软账号..."); webbrowser.open(url)
 
-    # ---- 3. 等待回调 ----
-    for _ in range(600):        # 最多等 5 分钟
+    for _ in range(600):
         if code_box[0]: break
         time.sleep(0.5)
     srv.shutdown(); srv.server_close()
@@ -312,8 +539,13 @@ def 正版登录():
             "client_id": CLIENT_ID, "code": code,
             "redirect_uri": REDIRECT_URI, "grant_type": "authorization_code"
         }, headers={"Content-Type": "application/x-www-form-urlencoded"})
-        r.raise_for_status(); ms_token = r.json()["access_token"]
-    except Exception as e: print(f"换取 Microsoft token 失败：{e}"); return None
+        r.raise_for_status()
+        data = r.json()
+        ms_token = data["access_token"]
+        refresh_token = data.get("refresh_token", "")
+    except Exception as e:
+        print(f"换取 Microsoft token 失败：{e}")
+        return None
 
     # ---- 5. Xbox Live ----
     try:
@@ -333,21 +565,51 @@ def 正版登录():
         xsts = r.json()["Token"]; uhs = r.json()["DisplayClaims"]["xui"][0]["uhs"]
     except Exception as e: print(f"XSTS 失败：{e}"); return None
 
-    # ---- 7. Minecraft token ----
-    try:
-        r = requests.post(MC_TOKEN, json={"identityToken": f"XBL3.0 x={uhs};{xsts}"})
-        r.raise_for_status(); mc_tok = r.json()["access_token"]
-    except Exception as e: print(f"Minecraft token 失败：{e}"); return None
+    # ---- 7. Minecraft token （加重试）----
+    mc_tok = None
+    for 第几次 in range(3):
+        try:
+            r = requests.post(MC_TOKEN, json={"identityToken": f"XBL3.0 x={uhs};{xsts}"}, timeout=15)
+            r.raise_for_status()
+            mc_tok = r.json()["access_token"]
+            break
+        except Exception as e:
+            print(f"  Minecraft token 第{第几次+1}次尝试失败")
+            time.sleep(2 ** 第几次)
+    
+    if not mc_tok:
+        print("❌ Minecraft token 获取失败"); return None
 
-    # ---- 8. 玩家信息 ----
-    try:
-        r = requests.get(MC_PROFILE, headers={"Authorization": f"Bearer {mc_tok}"})
-        r.raise_for_status(); p = r.json()
-        name = p["name"]; uid = p["id"]
-        uuid = uid[:8]+"-"+uid[8:12]+"-"+uid[12:16]+"-"+uid[16:20]+"-"+uid[20:]
-        print(f"✅ 正版登录成功：{name} ({uuid})")
-        return name, uuid, mc_tok
-    except Exception as e: print(f"获取信息失败：{e}"); return None
+    # ---- 8. 玩家信息 （加重试）----
+    for 第几次 in range(3):
+        try:
+            r = requests.get(MC_PROFILE, headers={"Authorization": f"Bearer {mc_tok}"}, timeout=15)
+            r.raise_for_status()
+            p = r.json()
+            name = p["name"]; uid = p["id"]
+            uuid = uid[:8]+"-"+uid[8:12]+"-"+uid[12:16]+"-"+uid[16:20]+"-"+uid[20:]
+            print(f"✅ 正版登录成功：{name} ({uuid})")
+            return name, uuid, mc_tok, refresh_token
+        except Exception as e:
+            print(f"  获取玩家信息第{第几次+1}次尝试失败")
+            time.sleep(2 ** 第几次)
+    
+    print("❌ 获取玩家信息失败"); return None
+
+#def onlineuser_W():
+    '''存储正版用户的name,tok,uuid'''
+    pmane, uuid, token =结果
+    file = open ('onlineusr.csv', 'w', encoding="UTF-8")
+    
+    writer = csv.writer(file)
+    
+    #head = ['name', 'token', 'uuid'] 
+    line_1 = [pmane, token, uuid]
+
+    #writer.writerow(head)
+    writer.writerow(line_1)
+    file.close()
+#onlineuser_W () 
 
 ##配置启动#
 def readconfig() :                                                     #读 an offline player need: pname , token ,uuid   ！！in aiidtion RAM！！
@@ -368,12 +630,11 @@ def readconfig() :                                                     #读 an o
     return (数据行[0], 数据行[1])
 #旧名字, 旧内存 = readconfig()  # 直接解包返回值
 
-...
+##########主登录流程#############################################################################################################################
 登录方式 = input("请选择登录方式（1=离线登录，2=正版登录）：")
 
 if 登录方式 == "2":
-    print("正在启动微软登录...")
-    结果 = 正版登录()   
+    结果 = 正版登录流程()  # ← 用新的流程！
     if 结果:
         pmane, uuid, token = 结果
         user_type = "mojang"
@@ -432,17 +693,10 @@ tgver = 目标版本
 #存储配置
 #config   an offline player need: pname , token ,uuid   ！！in aiidtion RAM！！
 
-def write_config():                                                      #存用户配置
-    file = open ('config.csv', 'w', encoding="UTF-8")
-    
-    writer = csv.writer(file)
-    
-    #head = ['name', 'token', 'uuid'] 
-    line_1 = [pmane, ram]
-
-    #writer.writerow(head)
-    writer.writerow(line_1)
-    file.close()
+def write_config(name, ram):
+    with open('config.csv', 'w', encoding="UTF-8", newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([name, ram])
 ... #if 
 
 #write_config ()                             #存
